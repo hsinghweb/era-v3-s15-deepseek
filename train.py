@@ -121,8 +121,12 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     
-    # Enable gradient checkpointing
-    model.gradient_checkpointing_enable()
+    # Try to enable gradient checkpointing if available
+    try:
+        model.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing enabled")
+    except AttributeError:
+        logger.warning("Gradient checkpointing not available, continuing without it")
     
     # Create dataset and dataloader with smaller batch size
     dataset = TextDataset("input.txt", tokenizer)
@@ -135,8 +139,7 @@ def main():
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.1,
-        foreach=True,
-        fused=True
+        foreach=True  # More memory efficient implementation
     )
     
     # Initialize gradient scaler for mixed precision

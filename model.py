@@ -112,9 +112,27 @@ class LlamaForCausalLM(nn.Module):
         super().__init__()
         self.model = LlamaModel(config)
         self.lm_head = nn.Linear(config['hidden_size'], config['vocab_size'], bias=False)
+        self.gradient_checkpointing = False
 
+    def gradient_checkpointing_enable(self, gradient_checkpointing=True):
+        self.gradient_checkpointing = gradient_checkpointing
+        
     def forward(self, input_ids, attention_mask=None, labels=None):
-        hidden_states = self.model(input_ids, attention_mask)
+        # Use torch.utils.checkpoint if gradient checkpointing is enabled
+        if self.gradient_checkpointing and self.training:
+            def create_custom_forward(module):
+                def custom_forward(*inputs):
+                    return module(*inputs)
+                return custom_forward
+            
+            hidden_states = torch.utils.checkpoint.checkpoint(
+                create_custom_forward(self.model),
+                input_ids,
+                attention_mask
+            )
+        else:
+            hidden_states = self.model(input_ids, attention_mask)
+            
         logits = self.lm_head(hidden_states)
         
         if labels is not None:
