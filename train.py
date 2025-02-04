@@ -24,8 +24,12 @@ if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
     torch.backends.cudnn.deterministic = False
 
+# Add at the very top
+import os
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
+
 class TextDataset(Dataset):
-    def __init__(self, file_path: str, tokenizer, max_length: int = 64):
+    def __init__(self, file_path: str, tokenizer, max_length: int = 32):  # Reduced to 32
         self.tokenizer = tokenizer
         self.max_length = max_length
         
@@ -33,7 +37,7 @@ class TextDataset(Dataset):
         with open(file_path, 'r', encoding='utf-8') as f:
             self.text = f.read()
             
-        # Split text into chunks of max_length tokens
+        # Process text in smaller chunks
         tokens = self.tokenizer.encode(
             self.text,
             truncation=True,
@@ -108,114 +112,119 @@ def verify_architecture(model, reference_file):
         return False
 
 def main():
+    # Memory optimization settings
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+        torch.cuda.set_per_process_memory_fraction(0.8)  # Limit GPU memory usage
+    
     # Create model and verify architecture
     model = create_model()
+    model = model.cpu()  # Keep on CPU initially
     
-    # Move model to CPU first for initialization
-    model = model.cpu()
-    logger.info("Model Architecture:")
-    logger.info("===================")
-    logger.info(model)
-    
+    # Verify architecture
     if not verify_architecture(model, "deepseek_v3_model_architecture.txt"):
         raise ValueError("Model architecture does not match reference architecture")
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-base")
     
-    # Set device and move model
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Using device: {device}")
-    
-    # Create dataset and dataloader with smaller batch size
+    # Create dataset with smaller chunks
     dataset = TextDataset("input.txt", tokenizer)
     dataloader = DataLoader(
         dataset, 
         batch_size=1,
         shuffle=True,
-        pin_memory=True if torch.cuda.is_available() else False,
+        pin_memory=False,  # Disable pin_memory to reduce memory usage
         num_workers=0
     )
     
-    # Enable gradient checkpointing and move model to device
+    # Set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
+    
+    # Move model to device layer by layer
+    for name, module in model.named_children():
+        module.to(device)
+        torch.cuda.empty_cache()
+    
+    # Enable gradient checkpointing
     try:
         model.gradient_checkpointing_enable()
         logger.info("Gradient checkpointing enabled")
     except AttributeError:
-        logger.warning("Gradient checkpointing not available, continuing without it")
+        logger.warning("Gradient checkpointing not available")
     
-    # Move model to device after all initialization
-    model = model.to(device)
-    
-    # Set requires_grad and initialize optimizer
-    for param in model.parameters():
-        param.requires_grad = True
-    
-    # Initialize optimizer with lower memory usage
+    # Optimizer with minimal memory usage
     optimizer = AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=1e-4,  # Reduced learning rate
+        model.parameters(),
+        lr=5e-5,  # Further reduced learning rate
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.1,
         foreach=True
     )
     
-    # Initialize gradient scaler for mixed precision
     scaler = GradScaler(enabled=torch.cuda.is_available())
     
-    # Training loop
+    # Training settings
     step = 0
     checkpoint_dir = Path("checkpoints")
     checkpoint_dir.mkdir(exist_ok=True)
     
     accumulated_steps = 0
-    effective_batch_size = 4
-    accumulation_steps = effective_batch_size
+    accumulation_steps = 8  # Increased for smaller memory footprint
     
     model.train()
     
     try:
         while step < 10000:
             for batch in dataloader:
-                # Clear memory before forward pass
-                if step % 50 == 0 and torch.cuda.is_available():  # More frequent cleanup
+                # Aggressive memory cleanup
+                if torch.cuda.is_available():
                     torch.cuda.empty_cache()
                     gc.collect()
                 
-                # Move batch to device
+                # Process in smaller chunks
                 input_ids = batch['input_ids'].to(device, non_blocking=True)
                 attention_mask = batch['attention_mask'].to(device, non_blocking=True)
                 labels = batch['labels'].to(device, non_blocking=True)
                 
-                # Forward pass with memory optimization
-                with autocast(device_type=device.type, enabled=torch.cuda.is_available()):
-                    loss = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=labels
-                    )
-                    loss = loss / accumulation_steps
-                
-                # Backward pass
-                if torch.cuda.is_available():
-                    scaler.scale(loss).backward()
-                else:
-                    loss.backward()
+                try:
+                    with autocast(device_type=device.type, enabled=torch.cuda.is_available()):
+                        loss = model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            labels=labels
+                        )
+                        loss = loss / accumulation_steps
+                    
+                    if torch.cuda.is_available():
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                    
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        continue
+                    raise e
                 
                 accumulated_steps += 1
                 
                 if accumulated_steps == accumulation_steps:
                     if torch.cuda.is_available():
                         scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)  # Reduced from 1.0
                         scaler.step(optimizer)
                         scaler.update()
                     else:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                         optimizer.step()
                     
-                    optimizer.zero_grad(set_to_none=True)  # More memory efficient
+                    optimizer.zero_grad(set_to_none=True)
                     accumulated_steps = 0
                     step += 1
                     
@@ -223,7 +232,8 @@ def main():
                         logger.info(f"Step {step}: loss = {loss.item() * accumulation_steps:.4f}")
                     
                     if step % 2500 == 0:
-                        # Save checkpoint
+                        # Save checkpoint to CPU first
+                        model.cpu()
                         checkpoint = {
                             'step': step,
                             'model_state_dict': model.state_dict(),
@@ -232,30 +242,27 @@ def main():
                         }
                         checkpoint_path = checkpoint_dir / f"model_step_{step}.pt"
                         torch.save(checkpoint, checkpoint_path)
-                        del checkpoint  # Free memory
+                        del checkpoint
+                        model.to(device)
                         logger.info(f"Saved checkpoint at step {step}")
                 
-                # Clean up memory
+                # Aggressive cleanup
                 del loss
                 del input_ids
                 del attention_mask
                 del labels
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
+                gc.collect()
                 
                 if step >= 10000:
                     break
                     
-    except RuntimeError as e:
-        if "out of memory" in str(e):
-            logger.error("Out of memory error occurred. Trying to free memory...")
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            raise e
-        else:
-            raise e
-
-    logger.info("\nFinal Model Generation Samples:")
+    except Exception as e:
+        logger.error(f"Training error: {str(e)}")
+        raise e
+    
+    # Final evaluation
+    model.cpu()  # Move to CPU for final generation
     sample_prompts = [
         "KING RICHARD III: Now is the time",
         "RICHMOND: My noble friends,",
@@ -263,7 +270,7 @@ def main():
     ]
     
     for prompt in sample_prompts:
-        generate_sample_text(model, tokenizer, max_length=50, device=device)
+        generate_sample_text(model, tokenizer, max_length=32, device='cpu')  # Generate on CPU
 
 if __name__ == "__main__":
     main()
