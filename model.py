@@ -185,13 +185,13 @@ class LlamaForCausalLM(nn.Module):
         return logits
 
 def create_model():
-    # Configuration for ~100M parameters
+    # Configuration for ~60M parameters
     config = {
         'vocab_size': 32256,
-        'hidden_size': 768,       # Reduced from 1536
-        'num_hidden_layers': 12,  # Reduced from 16
-        'num_attention_heads': 12, # Reduced from 16
-        'intermediate_size': 2048, # Reduced from 4096
+        'hidden_size': 512,       # Reduced from 768
+        'num_hidden_layers': 8,   # Reduced from 12
+        'num_attention_heads': 8,  # Reduced from 12
+        'intermediate_size': 1536, # Reduced from 2048
         'max_position_embeddings': 512,
         'rms_norm_eps': 1e-6,
         'bos_token_id': 32013,
