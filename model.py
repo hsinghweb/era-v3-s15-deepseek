@@ -265,13 +265,13 @@ class LlamaForCausalLM(nn.Module):
         return logits, balance_loss  # Return both logits and balance loss
 
 def create_model():
-    # Configuration for ~10M parameters
+    # Configuration for ~4M parameters
     config = {
         'vocab_size': 32256,
-        'hidden_size': 256,       # Reduced from 512
-        'num_hidden_layers': 4,   # Reduced from 8
-        'num_attention_heads': 4,  # Reduced from 8
-        'intermediate_size': 512,  # Reduced from 1536
+        'hidden_size': 128,       # Reduced from 256
+        'num_hidden_layers': 4,   # Keep same
+        'num_attention_heads': 4,  # Keep same
+        'intermediate_size': 256,  # Reduced from 512
         'max_position_embeddings': 512,
         'rms_norm_eps': 1e-6,
         'bos_token_id': 32013,
