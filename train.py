@@ -117,11 +117,24 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
-        torch.cuda.set_per_process_memory_fraction(0.8)  # Limit GPU memory usage
+        torch.cuda.set_per_process_memory_fraction(0.8)
     
-    # Create model and verify architecture
+    # Create model and print architecture
     model = create_model()
     model = model.cpu()  # Keep on CPU initially
+    
+    # Print model architecture and parameters
+    logger.info("\nModel Architecture:")
+    logger.info("===================")
+    logger.info(model)
+    
+    # Count and print parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.info("\nParameter Counts:")
+    logger.info("=================")
+    logger.info(f"Total Parameters: {total_params:,}")
+    logger.info(f"Trainable Parameters: {trainable_params:,}")
     
     # Verify architecture
     if not verify_architecture(model, "deepseek_v3_model_architecture.txt"):
@@ -174,7 +187,9 @@ def main():
     checkpoint_dir.mkdir(exist_ok=True)
     
     accumulated_steps = 0
-    accumulation_steps = 8  # Increased for smaller memory footprint
+    accumulation_steps = 8
+    best_loss = float('inf')
+    last_checkpoint_path = None
     
     model.train()
     
@@ -229,22 +244,35 @@ def main():
                     step += 1
                     
                     if step % 100 == 0:
-                        logger.info(f"Step {step}: loss = {loss.item() * accumulation_steps:.4f}")
+                        current_loss = loss.item() * accumulation_steps
+                        logger.info(f"Step {step}: loss = {current_loss:.4f}")
                     
-                    if step % 2500 == 0:
-                        # Save checkpoint to CPU first
+                    # Save checkpoint every 500 steps
+                    if step % 500 == 0:
+                        # Delete previous checkpoint if it exists
+                        if last_checkpoint_path and last_checkpoint_path.exists():
+                            last_checkpoint_path.unlink()
+                        
+                        # Save new checkpoint
                         model.cpu()
                         checkpoint = {
                             'step': step,
                             'model_state_dict': model.state_dict(),
                             'optimizer_state_dict': optimizer.state_dict(),
-                            'loss': loss.item(),
+                            'loss': loss.item() * accumulation_steps,
+                            'best_loss': best_loss
                         }
+                        
+                        # Create checkpoint filename with step number
                         checkpoint_path = checkpoint_dir / f"model_step_{step}.pt"
                         torch.save(checkpoint, checkpoint_path)
+                        last_checkpoint_path = checkpoint_path
+                        
+                        logger.info(f"Saved checkpoint at step {step}")
+                        logger.info(f"Current Loss: {loss.item() * accumulation_steps:.4f}")
+                        
                         del checkpoint
                         model.to(device)
-                        logger.info(f"Saved checkpoint at step {step}")
                 
                 # Aggressive cleanup
                 del loss
