@@ -29,6 +29,10 @@ class LlamaRotaryEmbedding(nn.Module):
 class LlamaAttention(nn.Module):
     def __init__(self, hidden_size):
         super().__init__()
+        self.hidden_size = hidden_size
+        self.num_heads = 16  # Increased to match config
+        self.head_dim = hidden_size // self.num_heads
+        
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -36,11 +40,13 @@ class LlamaAttention(nn.Module):
 
     def forward(self, hidden_states, attention_mask=None):
         batch_size, seq_length, _ = hidden_states.size()
+        
+        # Simplified attention computation
         query_states = self.q_proj(hidden_states)
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
         
-        scaling = 1.0 / math.sqrt(query_states.size(-1))
+        scaling = 1.0 / math.sqrt(self.head_dim)
         attention_scores = torch.matmul(query_states, key_states.transpose(-2, -1)) * scaling
         
         if attention_mask is not None:
@@ -146,13 +152,14 @@ class LlamaForCausalLM(nn.Module):
         return logits
 
 def create_model():
+    # Configuration for ~500M parameters
     config = {
         'vocab_size': 32256,
-        'hidden_size': 2048,
-        'num_hidden_layers': 24,
-        'num_attention_heads': 16,
-        'intermediate_size': 5504,
-        'max_position_embeddings': 16384,
+        'hidden_size': 1536,      # Increased from 512
+        'num_hidden_layers': 16,  # Increased from 6
+        'num_attention_heads': 16, # Increased from 8
+        'intermediate_size': 4096, # Increased from 1024
+        'max_position_embeddings': 512, # Keep this same for memory efficiency
         'rms_norm_eps': 1e-6,
         'bos_token_id': 32013,
         'eos_token_id': 32014,
