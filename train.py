@@ -111,6 +111,35 @@ def verify_architecture(model, reference_file):
         
         return False
 
+def generate_samples(model, tokenizer, device):
+    """Generate text for sample prompts"""
+    sample_prompts = [
+        "def fibonacci(n):",
+        "class BinaryTree:",
+        "# Function to sort an array",
+        "def quicksort(arr):",
+        "# Implement a simple REST API"
+    ]
+    
+    logger.info("\n=== Sample Generations ===")
+    model.eval()
+    with torch.no_grad():
+        for prompt in sample_prompts:
+            input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
+            outputs = model.generate(
+                input_ids,
+                max_length=128,
+                num_return_sequences=1,
+                temperature=0.7,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id
+            )
+            generated_text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            logger.info(f"\nPrompt: {prompt}")
+            logger.info(f"Generated:\n{generated_text}\n")
+            logger.info("-" * 50)
+    model.train()
+
 def main():
     # Memory optimization settings
     if torch.cuda.is_available():
@@ -249,6 +278,11 @@ def main():
                         progress = (step / total_steps) * 100
                         current_loss = loss.item() * accumulation_steps
                         logger.info(f"Progress: {progress:.1f}% ({step}/{total_steps}) - Current Loss: {current_loss:.4f}")
+                    
+                    # Generate samples after 100 steps
+                    if step == 100:
+                        logger.info("\nCompleted 100 steps - Generating sample outputs...")
+                        generate_samples(model, tokenizer, device)
                     
                     # Detailed logging every 100 steps
                     if step % 100 == 0:
