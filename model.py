@@ -4,15 +4,20 @@ from typing import Optional
 import math
 
 class LlamaRMSNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-6):
+    def __init__(self, shape, eps=1e-6):
         super().__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.weight = nn.Parameter(torch.ones(shape))
         self.eps = eps
-
+        # Store shape for string representation
+        self.shape = shape if isinstance(shape, tuple) else (shape,)
+        
     def forward(self, x):
         variance = x.pow(2).mean(-1, keepdim=True)
         x = x * torch.rsqrt(variance + self.eps)
         return self.weight * x
+    
+    def __repr__(self):
+        return f"LlamaRMSNorm({self.shape}, eps={self.eps})"
 
 class LlamaRotaryEmbedding(nn.Module):
     def __init__(self):
@@ -64,8 +69,8 @@ class LlamaDecoderLayer(nn.Module):
         super().__init__()
         self.self_attn = LlamaAttention(hidden_size)
         self.mlp = LlamaMLP(hidden_size, intermediate_size)
-        self.input_layernorm = LlamaRMSNorm(hidden_size, eps=1e-6)
-        self.post_attention_layernorm = LlamaRMSNorm(hidden_size, eps=1e-6)
+        self.input_layernorm = LlamaRMSNorm((hidden_size,), eps=1e-6)
+        self.post_attention_layernorm = LlamaRMSNorm((hidden_size,), eps=1e-6)
 
     def forward(self, hidden_states, attention_mask=None):
         # Self Attention
@@ -90,7 +95,7 @@ class LlamaModel(nn.Module):
             LlamaDecoderLayer(config['hidden_size'], config['intermediate_size'])
             for _ in range(config['num_hidden_layers'])
         ])
-        self.norm = LlamaRMSNorm(config['hidden_size'], eps=1e-6)
+        self.norm = LlamaRMSNorm((config['hidden_size'],), eps=1e-6)
         self.rotary_emb = LlamaRotaryEmbedding()
 
     def forward(self, input_ids, attention_mask=None):
