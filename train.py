@@ -75,6 +75,33 @@ def generate_sample_text(model, tokenizer, prompt, max_length=100, device='cuda'
         logger.info(f"Generated: {generated_text}\n")
     model.train()
 
+def verify_architecture(model, reference_file):
+    """Verify that model architecture matches reference"""
+    # Get current model architecture as string
+    current_arch = str(model).strip()
+    
+    # Read reference architecture
+    with open(reference_file, 'r') as f:
+        reference_arch = f.read().strip()
+    
+    # Compare architectures
+    if current_arch == reference_arch:
+        logger.info("✓ Model architecture exactly matches reference architecture")
+        return True
+    else:
+        logger.error("✗ Model architecture differs from reference!")
+        # Find and log differences
+        current_lines = current_arch.split('\n')
+        reference_lines = reference_arch.split('\n')
+        
+        for i, (curr, ref) in enumerate(zip(current_lines, reference_lines)):
+            if curr != ref:
+                logger.error(f"Line {i+1} differs:")
+                logger.error(f"Expected: {ref}")
+                logger.error(f"Got:      {curr}")
+        
+        return False
+
 def main():
     # Create model and print architecture
     model = create_model()
@@ -87,6 +114,11 @@ def main():
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     logger.info(f"\nTotal Parameters: {total_params:,}")
     logger.info(f"Trainable Parameters: {trainable_params:,}")
+    
+    # Verify architecture matches reference
+    logger.info("\nVerifying Model Architecture...")
+    if not verify_architecture(model, "deepseek_v3_model_architecture.txt"):
+        raise ValueError("Model architecture does not match reference architecture")
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-base")
