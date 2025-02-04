@@ -17,7 +17,7 @@ class LlamaRMSNorm(nn.Module):
 class LlamaRotaryEmbedding(nn.Module):
     def __init__(self, dim, max_position_embeddings=16384, base=10000):
         super().__init__()
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim // 2).float() / (dim // 2)))
         self.register_buffer("inv_freq", inv_freq)
         self.max_position_embeddings = max_position_embeddings
         self.dim = dim
@@ -26,14 +26,16 @@ class LlamaRotaryEmbedding(nn.Module):
         t = torch.arange(seq_len, device=x.device).type_as(self.inv_freq)
         freqs = torch.einsum("i,j->ij", t, self.inv_freq)
         emb = torch.cat((freqs, freqs), dim=-1)
-        return emb[None, :, :]
+        cos = torch.cos(emb)
+        sin = torch.sin(emb)
+        return cos, sin
 
 class LlamaAttention(nn.Module):
     def __init__(self, hidden_size):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = 16
-        self.head_dim = 128
+        self.head_dim = hidden_size // self.num_heads
         
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -49,17 +51,18 @@ class LlamaAttention(nn.Module):
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
         
-        query_states = query_states.view(batch_size, seq_length, self.num_heads, self.head_dim)
-        key_states = key_states.view(batch_size, seq_length, self.num_heads, self.head_dim)
-        value_states = value_states.view(batch_size, seq_length, self.num_heads, self.head_dim)
+        query_states = query_states.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
+        key_states = key_states.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
+        value_states = value_states.view(batch_size, seq_length, self.num_heads, self.head_dim).transpose(1, 2)
         
-        # Apply rotary embeddings
-        rot_emb = self.rotary_emb(query_states, seq_length)
-        query_states = query_states * torch.cos(rot_emb) + torch.roll(query_states, shifts=1, dims=-1) * torch.sin(rot_emb)
-        key_states = key_states * torch.cos(rot_emb) + torch.roll(key_states, shifts=1, dims=-1) * torch.sin(rot_emb)
+        cos, sin = self.rotary_emb(query_states, seq_length)
+        cos = cos.unsqueeze(0).unsqueeze(0)
+        sin = sin.unsqueeze(0).unsqueeze(0)
         
-        # Compute attention
-        attention_weights = torch.matmul(query_states, key_states.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        q_embed = (query_states * cos) + (self.rotate_half(query_states) * sin)
+        k_embed = (key_states * cos) + (self.rotate_half(key_states) * sin)
+        
+        attention_weights = torch.matmul(q_embed, k_embed.transpose(-2, -1)) / math.sqrt(self.head_dim)
         
         if attention_mask is not None:
             attention_weights = attention_weights + attention_mask
@@ -67,10 +70,17 @@ class LlamaAttention(nn.Module):
         attention_weights = torch.softmax(attention_weights, dim=-1)
         hidden_states = torch.matmul(attention_weights, value_states)
         
+        hidden_states = hidden_states.transpose(1, 2).contiguous()
         hidden_states = hidden_states.reshape(batch_size, seq_length, self.hidden_size)
         hidden_states = self.o_proj(hidden_states)
         
         return hidden_states
+    
+    @staticmethod
+    def rotate_half(x):
+        """Rotates half the hidden dims of the input."""
+        x1, x2 = x.chunk(2, dim=-1)
+        return torch.cat((-x2, x1), dim=-1)
 
 class LlamaMLP(nn.Module):
     def __init__(self, hidden_size, intermediate_size):
