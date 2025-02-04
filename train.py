@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.amp import autocast, GradScaler
 import gc
 import os
+from datasets import load_dataset
 
 # Configure logging
 logging.basicConfig(
@@ -28,42 +29,45 @@ if torch.cuda.is_available():
 import os
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'max_split_size_mb:32'
 
-class TextDataset(Dataset):
-    def __init__(self, file_path: str, tokenizer, max_length: int = 32):  # Reduced to 32
+class CosmopediaDataset(Dataset):
+    def __init__(self, tokenizer, max_length=32):
         self.tokenizer = tokenizer
         self.max_length = max_length
         
-        logger.info(f"Loading text from {file_path}")
-        with open(file_path, 'r', encoding='utf-8') as f:
-            self.text = f.read()
-            
-        # Process text in smaller chunks
-        tokens = self.tokenizer.encode(
-            self.text,
-            truncation=True,
-            max_length=max_length,
-            add_special_tokens=False
-        )
-        self.chunks = [tokens[i:i + max_length] for i in range(0, len(tokens), max_length)]
-        logger.info(f"Created {len(self.chunks)} text chunks")
+        logger.info("Loading Cosmopedia-100k dataset...")
+        self.dataset = load_dataset("HuggingFaceTB/cosmopedia-100k", split="train")
+        logger.info(f"Loaded {len(self.dataset)} examples")
 
     def __len__(self):
-        return len(self.chunks)
+        return len(self.dataset)
 
     def __getitem__(self, idx):
-        chunk = self.chunks[idx]
+        # Get text from dataset
+        text = self.dataset[idx]['text']
         
-        if len(chunk) < self.max_length:
-            chunk = chunk + [self.tokenizer.pad_token_id] * (self.max_length - len(chunk))
+        # Tokenize with truncation and padding
+        encodings = self.tokenizer(
+            text,
+            truncation=True,
+            max_length=self.max_length,
+            padding='max_length',
+            return_tensors='pt'
+        )
         
-        input_ids = torch.tensor(chunk)
+        # Squeeze to remove batch dimension added by tokenizer
+        input_ids = encodings['input_ids'].squeeze(0)
+        attention_mask = encodings['attention_mask'].squeeze(0)
+        
+        # Create labels (same as input_ids for causal language modeling)
         labels = input_ids.clone()
-        attention_mask = (input_ids != self.tokenizer.pad_token_id).float()
+        
+        # Mask padding tokens in labels with -100 so they're ignored in loss computation
+        labels[attention_mask == 0] = -100
         
         return {
             'input_ids': input_ids,
-            'labels': labels,
-            'attention_mask': attention_mask
+            'attention_mask': attention_mask,
+            'labels': labels
         }
 
 def generate_sample_text(model, tokenizer, prompt, max_length=50, device='cuda'):
@@ -169,13 +173,13 @@ def main():
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-base")
     
-    # Create dataset with smaller chunks
-    dataset = TextDataset("input.txt", tokenizer)
+    # Create dataset using Cosmopedia
+    dataset = CosmopediaDataset(tokenizer)
     dataloader = DataLoader(
         dataset, 
         batch_size=1,
         shuffle=True,
-        pin_memory=False,  # Disable pin_memory to reduce memory usage
+        pin_memory=False,
         num_workers=0
     )
     
