@@ -191,10 +191,14 @@ def main():
     best_loss = float('inf')
     last_checkpoint_path = None
     
+    # Add total steps for progress calculation
+    total_steps = 10000
+    
     model.train()
+    logger.info(f"\nStarting training for {total_steps} steps...")
     
     try:
-        while step < 10000:
+        while step < total_steps:
             for batch in dataloader:
                 # Aggressive memory cleanup
                 if torch.cuda.is_available():
@@ -232,7 +236,7 @@ def main():
                 if accumulated_steps == accumulation_steps:
                     if torch.cuda.is_available():
                         scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)  # Reduced from 1.0
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                         scaler.step(optimizer)
                         scaler.update()
                     else:
@@ -243,11 +247,19 @@ def main():
                     accumulated_steps = 0
                     step += 1
                     
+                    # Add progress logging every 10 steps
+                    if step % 10 == 0:
+                        progress = (step / total_steps) * 100
+                        current_loss = loss.item() * accumulation_steps
+                        logger.info(f"Progress: {progress:.1f}% ({step}/{total_steps}) - Current Loss: {current_loss:.4f}")
+                    
+                    # Detailed logging every 100 steps
                     if step % 100 == 0:
                         current_loss = loss.item() * accumulation_steps
-                        logger.info(f"Step {step}: loss = {current_loss:.4f}")
+                        logger.info(f"\nStep {step}: loss = {current_loss:.4f}")
+                        logger.info(f"Memory used: {torch.cuda.max_memory_allocated() / 1024**2:.1f}MB")
                     
-                    # Save checkpoint every 500 steps
+                    # Checkpoint saving every 500 steps
                     if step % 500 == 0:
                         # Delete previous checkpoint if it exists
                         if last_checkpoint_path and last_checkpoint_path.exists():
@@ -282,7 +294,7 @@ def main():
                 torch.cuda.empty_cache()
                 gc.collect()
                 
-                if step >= 10000:
+                if step >= total_steps:
                     break
                     
     except Exception as e:
