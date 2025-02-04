@@ -30,7 +30,7 @@ class LlamaAttention(nn.Module):
     def __init__(self, hidden_size):
         super().__init__()
         self.hidden_size = hidden_size
-        self.num_heads = 12  # Match config
+        self.num_heads = 4  # Match config
         self.head_dim = hidden_size // self.num_heads
         
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
@@ -185,13 +185,13 @@ class LlamaForCausalLM(nn.Module):
         return logits
 
 def create_model():
-    # Configuration for ~60M parameters
+    # Configuration for ~10M parameters
     config = {
         'vocab_size': 32256,
-        'hidden_size': 512,       # Reduced from 768
-        'num_hidden_layers': 8,   # Reduced from 12
-        'num_attention_heads': 8,  # Reduced from 12
-        'intermediate_size': 1536, # Reduced from 2048
+        'hidden_size': 256,       # Reduced from 512
+        'num_hidden_layers': 4,   # Reduced from 8
+        'num_attention_heads': 4,  # Reduced from 8
+        'intermediate_size': 512,  # Reduced from 1536
         'max_position_embeddings': 512,
         'rms_norm_eps': 1e-6,
         'bos_token_id': 32013,
