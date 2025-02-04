@@ -123,6 +123,40 @@ class LlamaForCausalLM(nn.Module):
     def gradient_checkpointing_enable(self, gradient_checkpointing=True):
         self.gradient_checkpointing = gradient_checkpointing
         
+    def generate(
+        self,
+        input_ids,
+        max_length=50,
+        num_return_sequences=1,
+        temperature=0.7,
+        pad_token_id=None,
+        eos_token_id=None,
+    ):
+        batch_size = input_ids.shape[0]
+        current_length = input_ids.shape[1]
+        
+        # Initialize generated sequences with input_ids
+        generated = input_ids.clone()
+        
+        with torch.no_grad():
+            for _ in range(max_length - current_length):
+                # Get model outputs
+                outputs = self.forward(generated)
+                next_token_logits = outputs[:, -1, :] / temperature
+                
+                # Sample from the logits
+                probs = torch.softmax(next_token_logits, dim=-1)
+                next_tokens = torch.multinomial(probs, num_samples=1)
+                
+                # Append new tokens
+                generated = torch.cat([generated, next_tokens], dim=1)
+                
+                # Check if EOS token was generated
+                if eos_token_id is not None and (next_tokens == eos_token_id).any():
+                    break
+                
+        return generated
+        
     def forward(self, input_ids, attention_mask=None, labels=None):
         # Use torch.utils.checkpoint if gradient checkpointing is enabled
         if self.gradient_checkpointing and self.training:
@@ -135,7 +169,7 @@ class LlamaForCausalLM(nn.Module):
                 create_custom_forward(self.model),
                 input_ids,
                 attention_mask,
-                use_reentrant=False  # Added explicit parameter
+                use_reentrant=False
             )
         else:
             hidden_states = self.model(input_ids, attention_mask)
@@ -144,7 +178,6 @@ class LlamaForCausalLM(nn.Module):
         
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
-            # Ensure inputs require gradients
             logits = logits.view(-1, logits.size(-1))
             labels = labels.view(-1)
             loss = loss_fct(logits, labels)

@@ -114,10 +114,10 @@ def verify_architecture(model, reference_file):
 def generate_samples(model, tokenizer, device):
     """Generate text for sample prompts"""
     sample_prompts = [
-        "def fibonacci(n):",
-        "class BinaryTree:",
+        "KING RICHARD III: Now is the time",
+        "RICHMOND: My noble friends,",
+        "To be, or not to be,",
         "# Function to sort an array",
-        "def quicksort(arr):",
         "# Implement a simple REST API"
     ]
     
