@@ -128,7 +128,8 @@ class LlamaForCausalLM(nn.Module):
             hidden_states = torch.utils.checkpoint.checkpoint(
                 create_custom_forward(self.model),
                 input_ids,
-                attention_mask
+                attention_mask,
+                use_reentrant=False  # Added explicit parameter
             )
         else:
             hidden_states = self.model(input_ids, attention_mask)
@@ -137,7 +138,10 @@ class LlamaForCausalLM(nn.Module):
         
         if labels is not None:
             loss_fct = nn.CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+            # Ensure inputs require gradients
+            logits = logits.view(-1, logits.size(-1))
+            labels = labels.view(-1)
+            loss = loss_fct(logits, labels)
             return loss
         return logits
 

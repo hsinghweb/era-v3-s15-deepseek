@@ -7,7 +7,7 @@ import glob
 from model import create_model
 from transformers import AutoTokenizer
 import torch.nn as nn
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 import gc
 
 # Configure logging
@@ -102,8 +102,9 @@ def verify_architecture(model, reference_file):
 
 def main():
     # Enable memory efficient attention
-    torch.backends.cuda.max_memory_split_size = None
-    torch.backends.cuda.max_memory_allocated = None
+    if torch.cuda.is_available():
+        torch.backends.cuda.max_memory_split_size = None
+        torch.backends.cuda.max_memory_allocated = None
     
     # Create model and verify architecture
     model = create_model()
@@ -119,6 +120,7 @@ def main():
     
     # Set device and move model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Using device: {device}")
     model = model.to(device)
     
     # Try to enable gradient checkpointing if available
@@ -132,18 +134,22 @@ def main():
     dataset = TextDataset("input.txt", tokenizer)
     dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
     
+    # Set requires_grad for all parameters
+    for param in model.parameters():
+        param.requires_grad = True
+    
     # Initialize optimizer with lower memory usage
     optimizer = AdamW(
-        model.parameters(),
+        filter(lambda p: p.requires_grad, model.parameters()),  # Only optimize parameters that require gradients
         lr=3e-4,
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.1,
-        foreach=True  # More memory efficient implementation
+        foreach=True
     )
     
     # Initialize gradient scaler for mixed precision
-    scaler = GradScaler()
+    scaler = GradScaler(enabled=torch.cuda.is_available())
     
     # Training loop
     step = 0
@@ -154,9 +160,11 @@ def main():
     effective_batch_size = 4
     accumulation_steps = effective_batch_size
     
+    model.train()  # Ensure model is in training mode
+    
     while step < 10000:
         for batch in dataloader:
-            if step % 100 == 0:
+            if step % 100 == 0 and torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 gc.collect()
             
@@ -164,7 +172,8 @@ def main():
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             
-            with autocast():
+            # Use autocast only if CUDA is available
+            with autocast(device_type=device.type, enabled=torch.cuda.is_available()):
                 loss = model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
@@ -172,13 +181,19 @@ def main():
                 )
                 loss = loss / accumulation_steps
             
-            scaler.scale(loss).backward()
+            if torch.cuda.is_available():
+                scaler.scale(loss).backward()
+            else:
+                loss.backward()
             
             accumulated_steps += 1
             
             if accumulated_steps == accumulation_steps:
-                scaler.step(optimizer)
-                scaler.update()
+                if torch.cuda.is_available():
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad()
                 accumulated_steps = 0
                 step += 1
@@ -205,7 +220,8 @@ def main():
                         generate_sample_text(model, tokenizer, prompt, device=device)
             
             del loss
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             if step >= 10000:
                 break
