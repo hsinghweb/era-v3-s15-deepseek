@@ -7,6 +7,8 @@ import glob
 from model import create_model
 from transformers import AutoTokenizer
 import torch.nn as nn
+from torch.cuda.amp import autocast, GradScaler
+import gc
 
 # Configure logging
 logging.basicConfig(
@@ -16,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class TextDataset(Dataset):
-    def __init__(self, file_path: str, tokenizer, max_length: int = 512):
+    def __init__(self, file_path: str, tokenizer, max_length: int = 128):
         self.tokenizer = tokenizer
         self.max_length = max_length
         
@@ -40,15 +42,11 @@ class TextDataset(Dataset):
     def __getitem__(self, idx):
         chunk = self.chunks[idx]
         
-        # Ensure chunk is exactly max_length by padding
         if len(chunk) < self.max_length:
             chunk = chunk + [self.tokenizer.pad_token_id] * (self.max_length - len(chunk))
         
-        # Convert to tensor
         input_ids = torch.tensor(chunk)
         labels = input_ids.clone()
-        
-        # Create attention mask (1 for real tokens, 0 for padding)
         attention_mask = (input_ids != self.tokenizer.pad_token_id).float()
         
         return {
@@ -57,7 +55,7 @@ class TextDataset(Dataset):
             'attention_mask': attention_mask
         }
 
-def generate_sample_text(model, tokenizer, prompt, max_length=100, device='cuda'):
+def generate_sample_text(model, tokenizer, prompt, max_length=50, device='cuda'):
     model.eval()
     with torch.no_grad():
         input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
@@ -103,97 +101,121 @@ def verify_architecture(model, reference_file):
         return False
 
 def main():
-    # Create model and print architecture
+    # Enable memory efficient attention
+    torch.backends.cuda.max_memory_split_size = None
+    torch.backends.cuda.max_memory_allocated = None
+    
+    # Create model and verify architecture
     model = create_model()
     logger.info("Model Architecture:")
     logger.info("===================")
     logger.info(model)
     
-    # Print parameter counts
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logger.info(f"\nTotal Parameters: {total_params:,}")
-    logger.info(f"Trainable Parameters: {trainable_params:,}")
-    
-    # Verify architecture matches reference
-    logger.info("\nVerifying Model Architecture...")
     if not verify_architecture(model, "deepseek_v3_model_architecture.txt"):
         raise ValueError("Model architecture does not match reference architecture")
     
     # Initialize tokenizer
     tokenizer = AutoTokenizer.from_pretrained("deepseek-ai/deepseek-coder-1.3b-base")
     
-    # Set device
+    # Set device and move model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
+    model = model.to(device)
     
-    # Create dataset and dataloader
+    # Enable gradient checkpointing
+    model.gradient_checkpointing_enable()
+    
+    # Create dataset and dataloader with smaller batch size
     dataset = TextDataset("input.txt", tokenizer)
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=True)
     
-    # Initialize optimizer
-    optimizer = AdamW(model.parameters(), lr=3e-4)
+    # Initialize optimizer with lower memory usage
+    optimizer = AdamW(
+        model.parameters(),
+        lr=3e-4,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+        weight_decay=0.1,
+        foreach=True,
+        fused=True
+    )
+    
+    # Initialize gradient scaler for mixed precision
+    scaler = GradScaler()
     
     # Training loop
     step = 0
     checkpoint_dir = Path("checkpoints")
     checkpoint_dir.mkdir(exist_ok=True)
     
+    accumulated_steps = 0
+    effective_batch_size = 4
+    accumulation_steps = effective_batch_size
+    
     while step < 10000:
         for batch in dataloader:
+            if step % 100 == 0:
+                torch.cuda.empty_cache()
+                gc.collect()
+            
             input_ids = batch['input_ids'].to(device)
             attention_mask = batch['attention_mask'].to(device)
             labels = batch['labels'].to(device)
             
-            # Forward pass
-            loss = model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                labels=labels
-            )
+            with autocast():
+                loss = model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    labels=labels
+                )
+                loss = loss / accumulation_steps
             
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            optimizer.zero_grad()
+            scaler.scale(loss).backward()
             
-            step += 1
+            accumulated_steps += 1
             
-            if step % 100 == 0:
-                logger.info(f"Step {step}: loss = {loss.item():.4f}")
-            
-            if step % 2500 == 0:
-                # Save checkpoint
-                checkpoint_path = checkpoint_dir / f"model_step_{step}.pt"
-                torch.save(model.state_dict(), checkpoint_path)
-                logger.info(f"Saved checkpoint at step {step}")
+            if accumulated_steps == accumulation_steps:
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+                accumulated_steps = 0
+                step += 1
                 
-                # Generate sample text
-                sample_prompts = [
-                    "KING RICHARD III:",
-                    "RICHMOND:",
-                    "To be, or not",
-                    "Friends, Romans,",
-                    "Now is the winter"
-                ]
-                for prompt in sample_prompts:
-                    generate_sample_text(model, tokenizer, prompt, device=device)
+                if step % 100 == 0:
+                    logger.info(f"Step {step}: loss = {loss.item() * accumulation_steps:.4f}")
+                
+                if step % 2500 == 0:
+                    checkpoint_path = checkpoint_dir / f"model_step_{step}.pt"
+                    torch.save({
+                        'step': step,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss.item(),
+                    }, checkpoint_path)
+                    logger.info(f"Saved checkpoint at step {step}")
+                    
+                    sample_prompts = [
+                        "KING RICHARD III:",
+                        "RICHMOND:",
+                        "To be, or not",
+                    ]
+                    for prompt in sample_prompts:
+                        generate_sample_text(model, tokenizer, prompt, device=device)
+            
+            del loss
+            torch.cuda.empty_cache()
             
             if step >= 10000:
                 break
     
-    # Final evaluation with 5 samples
     logger.info("\nFinal Model Generation Samples:")
     sample_prompts = [
-        "KING RICHARD III: Now is the time for",
+        "KING RICHARD III: Now is the time",
         "RICHMOND: My noble friends,",
         "To be, or not to be,",
-        "Friends, Romans, countrymen,",
-        "Now is the winter of our"
     ]
     
     for prompt in sample_prompts:
-        generate_sample_text(model, tokenizer, prompt, max_length=200, device=device)
+        generate_sample_text(model, tokenizer, max_length=50, device=device)
 
 if __name__ == "__main__":
     main()
