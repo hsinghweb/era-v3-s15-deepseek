@@ -284,8 +284,8 @@ def main():
                         logger.info(f"Progress: {progress:.1f}% ({step}/{total_steps}) - Current Loss: {current_loss:.4f}")
                     
                     # Generate samples after 100 steps
-                    if step == 100:
-                        logger.info("\nCompleted 100 steps - Generating sample outputs...")
+                    if step == 10:
+                        logger.info("\nCompleted 10 steps - Generating sample outputs...")
                         generate_samples(model, tokenizer, device)
                     
                     # Detailed logging every 100 steps
