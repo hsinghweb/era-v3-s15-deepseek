@@ -342,6 +342,8 @@ def main():
         "KING RICHARD III: Now is the time",
         "RICHMOND: My noble friends,",
         "To be, or not to be,",
+        "Good evening, ladies",
+        "I welcome to"
     ]
     
     for prompt in sample_prompts:
