@@ -145,13 +145,31 @@ def generate_samples(model, tokenizer, device):
     model.train()
 
 def get_latest_checkpoint(checkpoint_dir):
-    """Get the latest checkpoint file from the checkpoint directory"""
+    """Get the latest valid checkpoint file from the checkpoint directory"""
     checkpoint_files = list(Path(checkpoint_dir).glob("model_step_*.pt"))
     if not checkpoint_files:
         return None
-    # Sort by step number and get latest
-    latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.stem.split('_')[-1]))
-    return latest_checkpoint
+    
+    # Sort checkpoints by step number
+    checkpoint_files.sort(key=lambda x: int(x.stem.split('_')[-1]), reverse=True)
+    
+    # Try each checkpoint file until we find a valid one
+    for checkpoint_file in checkpoint_files:
+        try:
+            # Try to load the checkpoint to verify it's not corrupted
+            checkpoint = torch.load(checkpoint_file, map_location='cpu')
+            return checkpoint_file
+        except Exception as e:
+            logger.warning(f"Checkpoint {checkpoint_file} is corrupted: {str(e)}")
+            # Delete corrupted checkpoint
+            try:
+                checkpoint_file.unlink()
+                logger.info(f"Deleted corrupted checkpoint: {checkpoint_file}")
+            except Exception as e:
+                logger.warning(f"Failed to delete corrupted checkpoint: {str(e)}")
+            continue
+    
+    return None
 
 def main():
     # Memory optimization settings
@@ -224,20 +242,36 @@ def main():
     checkpoint_dir = Path("checkpoints")
     checkpoint_dir.mkdir(exist_ok=True)
     
-    # Check for existing checkpoints
-    latest_checkpoint_path = get_latest_checkpoint(checkpoint_dir)
-    if latest_checkpoint_path is not None:
-        logger.info(f"Found checkpoint: {latest_checkpoint_path}")
-        checkpoint = torch.load(latest_checkpoint_path)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        step = checkpoint['step']
-        best_loss = checkpoint.get('best_loss', float('inf'))
-        logger.info(f"Resuming training from step {step}")
-    else:
+    # Check for existing checkpoints with error handling
+    try:
+        latest_checkpoint_path = get_latest_checkpoint(checkpoint_dir)
+        if latest_checkpoint_path is not None:
+            logger.info(f"Found valid checkpoint: {latest_checkpoint_path}")
+            try:
+                checkpoint = torch.load(
+                    latest_checkpoint_path,
+                    map_location='cpu',
+                    weights_only=True  # Add this to avoid pickle warning
+                )
+                model.load_state_dict(checkpoint['model_state_dict'])
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+                step = checkpoint['step']
+                best_loss = checkpoint.get('best_loss', float('inf'))
+                logger.info(f"Successfully resumed training from step {step}")
+            except Exception as e:
+                logger.error(f"Error loading checkpoint: {str(e)}")
+                logger.info("Starting training from scratch")
+                step = 0
+                best_loss = float('inf')
+        else:
+            logger.info("No valid checkpoints found. Starting training from scratch")
+            step = 0
+            best_loss = float('inf')
+    except Exception as e:
+        logger.error(f"Error checking checkpoints: {str(e)}")
+        logger.info("Starting training from scratch")
         step = 0
         best_loss = float('inf')
-        logger.info("Starting training from scratch")
     
     accumulated_steps = 0
     accumulation_steps = 8
