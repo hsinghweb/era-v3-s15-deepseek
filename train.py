@@ -144,6 +144,15 @@ def generate_samples(model, tokenizer, device):
             logger.info("-" * 50)
     model.train()
 
+def get_latest_checkpoint(checkpoint_dir):
+    """Get the latest checkpoint file from the checkpoint directory"""
+    checkpoint_files = list(Path(checkpoint_dir).glob("model_step_*.pt"))
+    if not checkpoint_files:
+        return None
+    # Sort by step number and get latest
+    latest_checkpoint = max(checkpoint_files, key=lambda x: int(x.stem.split('_')[-1]))
+    return latest_checkpoint
+
 def main():
     # Memory optimization settings
     if torch.cuda.is_available():
@@ -212,20 +221,34 @@ def main():
     scaler = GradScaler(enabled=torch.cuda.is_available())
     
     # Training settings
-    step = 0
     checkpoint_dir = Path("checkpoints")
     checkpoint_dir.mkdir(exist_ok=True)
     
+    # Check for existing checkpoints
+    latest_checkpoint_path = get_latest_checkpoint(checkpoint_dir)
+    if latest_checkpoint_path is not None:
+        logger.info(f"Found checkpoint: {latest_checkpoint_path}")
+        checkpoint = torch.load(latest_checkpoint_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        step = checkpoint['step']
+        best_loss = checkpoint.get('best_loss', float('inf'))
+        logger.info(f"Resuming training from step {step}")
+    else:
+        step = 0
+        best_loss = float('inf')
+        logger.info("Starting training from scratch")
+    
     accumulated_steps = 0
     accumulation_steps = 8
-    best_loss = float('inf')
-    last_checkpoint_path = None
+    last_checkpoint_path = latest_checkpoint_path
     
     # Add total steps for progress calculation
     total_steps = 10000
     
     model.train()
-    logger.info(f"\nStarting training for {total_steps} steps...")
+    logger.info(f"\nTraining will run until step {total_steps}")
+    logger.info(f"Current step: {step}")
     
     try:
         while step < total_steps:
