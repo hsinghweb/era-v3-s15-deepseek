@@ -70,7 +70,17 @@ class CosmopediaDataset(Dataset):
             'labels': labels
         }
 
-def generate_sample_text(model, tokenizer, prompt, max_length=50, device='cuda'):
+def generate_sample_text(model, tokenizer, prompt, max_length=50, device=None):
+    """Generate text with device fallback"""
+    # Check if device is specified, otherwise detect automatically
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        # If CUDA is specified but not available, fallback to CPU
+        if device == 'cuda' and not torch.cuda.is_available():
+            logger.warning("CUDA requested but not available, falling back to CPU")
+            device = 'cpu'
+    
     model.eval()
     with torch.no_grad():
         input_ids = tokenizer.encode(prompt, return_tensors="pt").to(device)
@@ -392,23 +402,22 @@ def main():
         raise e
     
     # Final evaluation
-    model.cpu()  # Move to CPU for final generation
     sample_prompts = [
-        "KING RICHARD III: Now is the time",
-        "RICHMOND: My noble friends,",
-        "To be, or not to be,",
-        "Good evening, ladies",
-        "I welcome to"
+        "Here is an extract from a webpage: \"Recording of Present Day:",
+        "Course Unit: LISA Pathfinder Mission and Gravitational Wave Detection",
+        "Title: Making Mathematics Accessible: The Importance",
+        "The Performing Arts encompass many different forms of artistic",
+        "It was a bright, sunny day and Maria was excited to wear"
     ]
     
     logger.info("\nGenerating final samples...")
+    # Let generate_sample_text handle device selection
     for prompt in sample_prompts:
         generate_sample_text(
             model=model, 
             tokenizer=tokenizer, 
-            prompt=prompt,  # Add the prompt parameter
-            max_length=32, 
-            device='cuda'
+            prompt=prompt,
+            max_length=32
         )
 
 if __name__ == "__main__":
