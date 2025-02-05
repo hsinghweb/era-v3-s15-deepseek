@@ -401,8 +401,15 @@ def main():
         "I welcome to"
     ]
     
+    logger.info("\nGenerating final samples...")
     for prompt in sample_prompts:
-        generate_sample_text(model, tokenizer, max_length=32, device='cpu')  # Generate on CPU
+        generate_sample_text(
+            model=model, 
+            tokenizer=tokenizer, 
+            prompt=prompt,  # Add the prompt parameter
+            max_length=32, 
+            device='cuda'
+        )
 
 if __name__ == "__main__":
     main()
