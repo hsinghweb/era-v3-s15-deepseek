@@ -345,14 +345,12 @@ def main():
                         logger.info("\nCompleted 10 steps - Generating sample outputs...")
                         generate_samples(model, tokenizer, device)
                     
-                    # Detailed logging every 100 steps
+                    # Detailed logging and checkpoint saving every 100 steps
                     if step % 100 == 0:
                         current_loss = loss.item() * accumulation_steps
                         logger.info(f"\nStep {step}: loss = {current_loss:.4f}")
                         logger.info(f"Memory used: {torch.cuda.max_memory_allocated() / 1024**2:.1f}MB")
-                    
-                    # Checkpoint saving every 500 steps
-                    if step % 500 == 0:
+                        
                         # Delete previous checkpoint if it exists
                         if last_checkpoint_path and last_checkpoint_path.exists():
                             last_checkpoint_path.unlink()
