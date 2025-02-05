@@ -288,7 +288,7 @@ def main():
     last_checkpoint_path = latest_checkpoint_path
     
     # Add total steps for progress calculation
-    total_steps = 10000
+    total_steps = 10100
     
     model.train()
     logger.info(f"\nTraining will run until step {total_steps}")
